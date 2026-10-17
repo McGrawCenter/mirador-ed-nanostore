@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Mirador Viewer</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.snow.css" />
+  <script src="http://localhost/nanostore_u/views/mirador/assets/js/manifesto.js"></script>
+</head>
+<body>
+
+  <div id="mirador" style="position: relative; width: 100%; height: 99vh;"></div>
+
+  <script src="http://localhost/nanostore_u/views/mirador/dist/custom-mirador.js"></script>
+
+  <script>
+  
+
+async function initMirador() {
+  // 1. Parse URL parameters using native URLSearchParams
+  const params = new URLSearchParams(window.location.search);
+  var manifestUrl = params.get('manifest') || params.get('iiif-content');
+  if(manifestUrl) {  manifestUrl = urlFixes(manifestUrl); }
+  
+
+  // Base Mirador Configuration
+  const config = {
+    id: 'mirador',
+    windows: [],
+    catalog: []
+  };
+
+  // If no manifest URL is provided in the query string, initialize an empty viewer
+  if (!manifestUrl) {
+    console.warn('No manifest parameter provided in URL.');
+    CustomMirador.viewer(config);
+    return;
+  }
+
+  try {
+    // 2. Fetch manifest or collection data
+    const response = await fetch(manifestUrl);
+    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+    const data = await response.json();
+
+    // 3. Parse with Manifesto
+    const iiifResource = manifesto.parseManifest(data);
+    
+    // Safely check resource type (handles both IIIF v2 and v3 via Manifesto)
+    const isCollection = iiifResource.isCollection ? iiifResource.isCollection() : data.type === 'Collection';
+
+    if (!isCollection) {
+      // -----------------------------------------------------------------
+      // MANIFEST HANDLING
+      // -----------------------------------------------------------------
+      const windowConfig = {
+        manifestId: manifestUrl
+      };
+
+      // Handle view mode ('single', 'book', 'gallery')
+      if (params.has('view')) {
+        windowConfig.view = params.get('view');
+      }
+
+      // Handle target/canvas indexing (ensure integer conversion)
+      if (params.has('canvasindex')) {
+        windowConfig.canvasIndex = parseInt(params.get('canvasindex'), 10);
+      } else if (params.has('target')) {
+        windowConfig.canvasIndex = parseInt(params.get('target'), 10);
+      } else if (params.has('canvas')) {
+        windowConfig.canvasId = params.get('canvas');
+      }
+
+      // Handle thumbnail navigation bar position
+      if (params.has('nav') || params.has('thumbnails')) {
+        windowConfig.thumbnailNavigationPosition = 'far-bottom';
+      }
+
+      config.windows.push(windowConfig);
+
+    } else {
+      // -----------------------------------------------------------------
+      // COLLECTION HANDLING
+      // -----------------------------------------------------------------
+      // Extract items list safely from Manifesto or raw JSON
+      const items = iiifResource.getItems ? iiifResource.getItems() : (data.items || []);
+
+      const catalogParam = params.get('catalog');
+      const instructions = params.get('instructions');
+      const targetParam = params.get('target');
+
+      if (catalogParam) {
+        if (catalogParam === 'true' && instructions === 'true') {
+          config.windows.push({
+            manifestId: 'https://etcpanel.princeton.edu/IIIF/manifests/instructions/manifest.json'
+          });
+        } else {
+          // Parse comma-separated collection indices (e.g., ?catalog=0,2)
+          const indices = catalogParam.split(',').map(n => parseInt(n.trim(), 10));
+          indices.forEach(index => {
+            const item = items[index];
+            if (item) {
+              config.windows.push({
+                manifestId: item.id || item.isManifest?.()
+              });
+            }
+          });
+        }
+      } else if (targetParam) {
+        // Parse dot notation target (e.g., ?target=0.4 -> 0th item in collection, 4th canvas)
+        const targetParts = targetParam.split('.').map(n => parseInt(n.trim(), 10));
+        const itemIndex = targetParts[0];
+        const canvasIndex = targetParts[1];
+
+        const targetItem = items[itemIndex];
+        if (targetItem) {
+          const win = { manifestId: targetItem.id };
+          if (!isNaN(canvasIndex)) {
+            win.canvasIndex = canvasIndex;
+          }
+          config.windows.push(win);
+        }
+      } else {
+        // Default: Open first two items in collection side-by-side if available
+        if (items[0]) config.windows.push({ manifestId: items[0].id });
+        if (items[1]) config.windows.push({ manifestId: items[1].id });
+      }
+
+      // Populate catalog drawer with all collection items
+      items.forEach(item => {
+        config.catalog.push({
+          manifestId: item.id
+        });
+      });
+    }
+    
+    const userData = {
+              "id": "benj",
+              "name": "Ben Johnston"
+            }
+    const options = {
+       "institution": {
+		    "id": "http://www.myinstitution.edu/",
+		    "type": "Institution",
+		    "name": "My Institution"
+		  },
+       "course": {
+		    "id": "http://institutionallms.edu/123456",
+		    "type": "Course",
+		    "name": "ART 100, Fall 2026"
+		  },
+       "assignment": {
+		    "id": "http://institutionallms.edu/123456/assignment1",
+		    "type": "Week 2 Visual Cutlure Exercise"
+		  }
+    }
+/*
+    config.annotation = {
+	    // Reference the class attached to CustomMirador
+	    adapter: (canvasId) => new CustomMirador.NanostoreAdapter(
+	      canvasId, 
+	      `http://localhost/nanostore_rerum2`,
+	      options
+	    ),
+	    userData
+	  }
+*/    
+     config.annotation = {
+	    // Reference the class attached to CustomMirador
+	    adapter: (canvasId) => new CustomMirador.NanostoreAdapter(
+	      canvasId, 
+	      `http://localhost/nanostore_u`
+	    )
+	  }
+    
+    
+
+    //console.log('Final Mirador Config:', config);
+
+    // 4. Instantiate Mirador ONLY AFTER config is fully constructed
+    CustomMirador.viewer(config);
+
+  } catch (err) {
+    console.error('Failed to load IIIF manifest or initialize Mirador:', err);
+  }
+}
+
+	
+document.addEventListener('DOMContentLoaded', initMirador);
+
+function urlFixes(url) {
+    /************************
+    * UCLA has an 'ark:' in their urls that need to be encoded
+    ************************************/
+    url = url.replace(/ark:\/(.*?)\/manifest/, function(r, a) {
+        var parts = a.split('/');
+        return "ark%3A%2F" + parts.join('%2F')+"/manifest";
+    });
+    return url;
+}  
+  
+
+  </script>
+</body>
+</html>
